@@ -1,0 +1,8 @@
+python/.venv/
+python/__pycache__/
+*.o
+*.dylib
+*.so
+Manifest.toml
+/docs/build/
+.DS_Store
