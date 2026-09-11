@@ -44,6 +44,52 @@ else
         s = smp()
         @test size(s) == (500, 2) && all(s[:, 1] .== s[:, 2])
 
+        # control flow: measurement-conditioned branches, static loops and classical while loops
+        @qnode dev function tp(θ); teleport(θ); end
+        ez, ey = tp(0.9)
+        @test ez ≈ cos(0.9) atol = 1e-10
+        @test ey ≈ -sin(0.9) atol = 1e-10
+        @qnode dev function ql(γ, β); qaoa_looped(γ, β); end
+        @qnode StateVector() function qs(γ, β); qaoa_looped(γ, β); end
+        γ, β = [0.4, 0.9], [0.3, 0.6]
+        @test ql(γ, β) ≈ qs(γ, β) atol = 1e-10
+        @qnode dev function cw(θ)
+            q = qubits(1)
+            k = 0
+            @trace while k < 3
+                q[1] = RX(θ, q[1])
+                k = k + 1
+            end
+            return expval(Z(q[1]))
+        end
+        @test cw(0.3) ≈ cos(0.9) atol = 1e-10
+        @qnode dev function bothm()
+            q = qubits(3)
+            q[1] = Hadamard(q[1]); q[2] = Hadamard(q[2])
+            m1, q[1] = measure(q[1]); m2, q[2] = measure(q[2])
+            @trace if m1 & m2
+                q[3] = PauliX(q[3])
+            end
+            @trace if !m1
+                q[3] = PauliX(q[3])
+            end
+            return probs(q[3])
+        end
+        @test bothm() ≈ [0.25, 0.75] atol = 1e-10
+        @qnode dev function rus()
+            q = qubits(1)
+            m = false
+            @trace while !m
+                q[1] = Hadamard(q[1])
+                m, q[1] = measure(q[1])
+            end
+            return expval(Z(q[1]))
+        end
+        @test_throws ArgumentError rus()
+        shots_dev = PyDevice("default.qubit"; shots=400)
+        @qnode shots_dev function tps(θ); teleport(θ)[1]; end
+        @test abs(tps(0.9) - cos(0.9)) < 0.2
+
         @qnode dev function bell(θ); a, b = qubits(2); a = RX(θ, a); a, b = CNOT(a, b); return expval(Z(b)); end
         d = draw(bell, 0.3)
         @test occursin("RX", d) && occursin("<Z>", d)

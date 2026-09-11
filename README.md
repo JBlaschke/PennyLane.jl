@@ -54,8 +54,12 @@ Plain Julia `if`/`for` are unrolled at trace time; `@trace` keeps them (see `exa
 | `CatalystDevice(; shots)` | Julia → MLIR → `catalyst` CLI → shared library; compiled adjoint gradients | Catalyst binaries, `clang` |
 | `PyDevice(name; shots, kwargs...)` | any PennyLane device, including hardware plugins, through PythonCall | `using PythonCall` |
 | `YaoDevice(; shots)` | Yao.jl's `ArrayReg`/`instruct!` kernels through the simulator interface | `import Yao` |
+| `JITDevice()` | Julia code generated from the program, calling the Catalyst runtime directly; compiled by Julia's JIT (static expval circuits) | Catalyst binaries |
 
 Measurements: `expval`, `var`, `probs`, `state`, `sample` (needs shots), `measure` (mid-circuit).
+`PyDevice` lowers `measure` and `@trace if` on measurement results to PennyLane's measurement values
+(deferred measurement or dynamic one-shot on the device), unrolls `@trace for`/classical `while`, and rejects
+repeat-until-success loops (dynamic control flow).
 Gradients: `gradient(qn, args...; method)` with `:adjoint` (exact, one backward pass; the default on
 analytic `StateVector`/`LightningDevice` for static circuits, and compiled on `CatalystDevice` where it also
 works through `@trace for`/`if`), `:parameter_shift` (hardware compatible; default with shots and on
@@ -90,6 +94,16 @@ println(draw(bell, 0.3))
 Other simulators plug in by implementing the `AbstractSimulator` interface
 (`sim_allocate`, `sim_apply!`, `sim_expval`, `sim_state`, optional `sim_var`, `sim_probs`, `sim_sample`,
 `sim_measure!`, `sim_release!`); `ext/PennyLaneYaoExt.jl` is a 60-line example.
+
+## Compiler research (optional extensions)
+
+- **Julia → native, no MLIR** (`using GPUCompiler`): `native_llvm_ir(qn, args...)` shows the LLVM IR of the program
+  as straight-line calls into the Catalyst runtime; `compile_native(qn, args...)` builds a standalone shared library
+  whose only external symbols are the runtime's `__catalyst__*` functions, callable like the QNode.
+- **Julia passes on Catalyst's IR** (`using Reactant`): `mlir_pass(text, :cancel_inverses)` runs a pass written in
+  Julia against Reactant's MLIR bindings (Catalyst's ops as unregistered operations, exchanged as text), and
+  `CatalystDevice(mlir_transform = s -> mlir_pass(s, :cancel_inverses))` compiles the result.
+- `examples/compilers.jl` walks through both, next to the JIT and Catalyst paths.
 
 ## Tests
 

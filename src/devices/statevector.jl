@@ -94,6 +94,8 @@ function _apply_1q!(ψ::Vector{Complex{T}}, U::AbstractMatrix, wire::Int, n::Int
     s = 1 << t
     u11, u12, u21, u22 = Complex{T}(U[1, 1]), Complex{T}(U[1, 2]), Complex{T}(U[2, 1]), Complex{T}(U[2, 2])
     mask = s - 1
+    # flat index space over all pairs: balanced across threads for every wire position
+    # (a contiguous hi/lo loop variant measured slower in bench/latency.jl, see PLAN.md)
     @_parfor threaded k (1 << (n - 1)) begin
         @inbounds begin
             i0 = (((k >> t) << (t + 1)) | (k & mask)) + 1

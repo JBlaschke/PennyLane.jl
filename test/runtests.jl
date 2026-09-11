@@ -20,6 +20,8 @@ include("circuits.jl")
     include("test_controlflow.jl")
     include("test_qaoa.jl")
     include("test_catalyst.jl")
+    include("test_native.jl")
     include("test_pythoncall.jl")
     include("test_yao.jl")
+    include("test_reactant.jl")
 end
