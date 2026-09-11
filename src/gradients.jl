@@ -45,6 +45,8 @@ end
 
 function parameter_shift_gradient(dev::AbstractDevice, prog::Program, args::Vector{Any})
     _check_scalar_expval(prog, "the parameter-shift gradient")
+    (has_control_flow(prog) || has_mcm(prog)) &&
+        throw(ArgumentError("the parameter-shift gradient needs a static circuit (no @trace control flow or mid-circuit measurements); use plain Julia loops (unrolled), method=:finitediff, or Catalyst's :adjoint for loops"))
     grads = _zero_grads(args)
     slots = _arg_slots(args)
     for (ni, node) in enumerate(prog.nodes)

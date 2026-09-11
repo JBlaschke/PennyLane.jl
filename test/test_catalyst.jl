@@ -48,6 +48,18 @@ else
         s = smp()
         @test size(s) == (400, 2) && all(x -> x in (0, 1), s) && all(s[:, 1] .== s[:, 2])
 
+        # mid-circuit measurements and control flow through the runtime (T3)
+        @qnode dev function tp_l(θ); teleport(θ); end
+        for θ in (0.3, 2.1), _ in 1:3
+            ez, ey = tp_l(θ)
+            @test ez ≈ cos(θ) atol = 1e-10
+            @test ey ≈ -sin(θ) atol = 1e-10
+        end
+        @qnode dev function rus_l(); rus(); end
+        for _ in 1:3
+            @test rus_l() ≈ -1 atol = 1e-10
+        end
+
         # random circuits: Lightning vs the Julia simulator
         @qnode dev function rnd_l(θ); random_circuit(θ); end
         @qnode StateVector() function rnd_s(θ); random_circuit(θ); end
@@ -125,6 +137,41 @@ else
         θ = collect(range(0.15, 2.9; length=ALL_GATES_NPARAMS))
         @test allg_c(θ) ≈ allg_s(θ) atol = 1e-10
         @test gradient(allg_c, θ) ≈ gradient(allg_s, θ) atol = 1e-7
+
+        # control flow and mid-circuit measurements compiled by Catalyst (T3, T2 loop version)
+        @qnode dev function tp_c(θ); teleport(θ); end
+        for θ in (0.3, 2.1), _ in 1:3
+            ez, ey = tp_c(θ)
+            @test ez ≈ cos(θ) atol = 1e-10
+            @test ey ≈ -sin(θ) atol = 1e-10
+        end
+        @qnode dev function rus_c(); rus(); end
+        for _ in 1:3
+            @test rus_c() ≈ -1 atol = 1e-10
+        end
+        @qnode dev function ql_c(γ, β); qaoa_looped(γ, β); end
+        @qnode StateVector() function qu_s(γ, β); qaoa_unrolled(γ, β); end
+        γ, β = [0.4, 0.9], [0.3, 0.6]
+        @test ql_c(γ, β) ≈ qu_s(γ, β) atol = 1e-10
+        @test gradient(ql_c, γ, β)[1] ≈ gradient(qu_s, γ, β)[1] atol = 1e-7      # compiled adjoint through scf.for
+        @qnode dev function acc_c(θ)
+            q = qubits(1)[1]
+            s = 0.0
+            @trace for i in 1:4
+                s = s + θ[i] * 0.5
+            end
+            q = RX(s, q)
+            k = 0
+            @trace while k < 3
+                q = RY(θ[1], q)
+                k = k + 1
+            end
+            return expval(Z(q))
+        end
+        θ4 = [0.2, 0.4, 0.6, 0.8]
+        @test acc_c(θ4) ≈ cos(sum(θ4) * 0.5) * cos(3 * θ4[1]) atol = 1e-10
+        @test_throws ArgumentError gradient(acc_c, θ4)                            # no compiled gradient through scf.while
+        @test_throws ArgumentError gradient(tp_c, 0.3)                            # no compiled gradient with MCM
 
         # shots: sampling through the compiled program
         sdev = CatalystDevice(shots=300)

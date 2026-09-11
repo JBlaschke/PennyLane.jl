@@ -30,6 +30,8 @@ end
 
 """PennyLane `QuantumScript` for a program with concrete arguments."""
 function to_tape(prog::Program, args::Vector{Any}, shots::Int)
+    (PennyLane.has_control_flow(prog) || PennyLane.has_mcm(prog)) &&
+        throw(ArgumentError("control flow and mid-circuit measurements are not yet supported on PyDevice; unroll loops or use StateVector/LightningDevice/CatalystDevice"))
     q = qml()
     ops = Py[]
     meas = Py[]

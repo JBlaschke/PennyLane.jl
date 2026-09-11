@@ -65,7 +65,10 @@ end
 """Compile a program with the Catalyst CLI, link it, and load it."""
 function compile(dev::CatalystDevice, prog::Program)
     env = catalyst_env()
-    grad = prog.scalar_return && prog.result_specs[1].kind === :expval && !isempty(prog.args)
+    # Catalyst's gradient lowering handles scf.if/scf.for with qubit iteration arguments but not
+    # scf.while (it needs register threading there); no compiled gradient in that case.
+    grad = prog.scalar_return && prog.result_specs[1].kind === :expval && !isempty(prog.args) && !has_mcm(prog) &&
+           !any(n -> n isa WhileNode, all_nodes(prog))
     src = to_mlir(prog; device_lib=env.lightning_plugin, device_kwargs=dev.kwargs, shots=dev.shots, grad=grad)
     dir = mktempdir(; cleanup=!dev.keep_intermediate)
     name = string(prog.name)
@@ -175,7 +178,7 @@ function compiled_gradient(qn::QNode, args...)
     prog = program(qn, a...)
     qn.dev isa CatalystDevice || throw(ArgumentError("the :adjoint gradient is compiled by Catalyst and needs a CatalystDevice; use :parameter_shift or :finitediff on $(typeof(qn.dev))"))
     mod = compiled(qn.dev, prog)
-    mod.grad_fn == C_NULL && throw(ArgumentError("compiled gradients need a QNode with arguments returning a single expval"))
+    mod.grad_fn == C_NULL && throw(ArgumentError("compiled gradients need a QNode with arguments returning a single expval, without mid-circuit measurements or @trace while loops"))
     rt_initialize!()
     out = call_ffi(mod.grad_fn, a, FFIShape[_arg_shape(s) for s in prog.args])
     length(out) == 1 ? out[1] : Tuple(out)

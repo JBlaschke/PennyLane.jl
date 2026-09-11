@@ -58,11 +58,12 @@
     end
     θ = [0.1, 0.2]; ϕ = 0.5
     @test arith(θ, ϕ) ≈ cos(2θ[1] + sin(θ[2]) - ϕ / 2)
-    @test_throws ArgumentError (@qnode dev function branch(θ)
+    @test_throws TypeError (@qnode dev function branch(θ)      # plain `if`/`&&` on a traced comparison
         a = qubits(1)[1]
         θ > 0 && (a = PauliX(a))
         return expval(Z(a))
     end)(0.3)
+    @test (0.3 < TracedReal(PennyLane.CConst(0.5))).expr == PennyLane.CBConst(true)
 
     # the Pauli operators are not gates
     @qnode dev function wrongx(θ)

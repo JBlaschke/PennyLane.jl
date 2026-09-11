@@ -44,6 +44,7 @@ export Gate, ctrl, PauliX, PauliY, PauliZ, Hadamard, S, T, RX, RY, RZ, PhaseShif
        SingleExcitation, DoubleExcitation, BasisState
 # programs
 export @qnode, QNode, Program, Qubit, qubits, qubit, expval, var, probs, state, sample, program, mlir, to_mlir, gradient
+export measure, @trace, @qif, @qfor, @qwhile, evolve, ApproxTimeEvolution, TracedReal, TracedInt, TracedBool
 export QubitConsumedError, TraceError
 # devices
 export AbstractDevice, AbstractSimulator, StateVector, LightningDevice, CatalystDevice, PyDevice, execute
