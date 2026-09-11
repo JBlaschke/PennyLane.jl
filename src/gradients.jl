@@ -88,16 +88,25 @@ end
     gradient(qn::QNode, args...; method=:auto, h=1e-6)
 
 Gradient of a single-expval QNode with respect to all of its arguments (one entry per argument,
-a tuple when there are several). Methods: `:parameter_shift` (default on simulators and
-`PyDevice`, hardware compatible), `:adjoint` (default on `CatalystDevice`, compiled by
-Catalyst), `:finitediff` (any device, step `h`).
+a tuple when there are several). Methods: `:adjoint` (exact, one backward pass; default on
+analytic `StateVector`/`LightningDevice` for static circuits and on `CatalystDevice`, where it
+is compiled), `:parameter_shift` (hardware compatible; default with shots and on `PyDevice`),
+`:finitediff` (any device, step `h`).
 """
+_static_single_expval(prog::Program) =
+    prog.scalar_return && prog.result_specs[1].kind === :expval && !has_control_flow(prog) && !has_mcm(prog)
+
 function gradient(qn::QNode, args...; method::Symbol=:auto, h::Real=1e-6)
     a = normalize_args(args)
     prog = program(qn, a...)
-    method === :auto && (method = qn.dev isa CatalystDevice ? :adjoint : :parameter_shift)
-    method === :adjoint && return compiled_gradient(qn, a...)
-    method === :parameter_shift && return parameter_shift_gradient(qn.dev, prog, a)
-    method === :finitediff && return finitediff_gradient(qn.dev, prog, a, Float64(h))
+    dev = qn.dev
+    if method === :auto
+        method = dev isa CatalystDevice ? :adjoint :
+                 (dev isa StateVector || dev isa LightningDevice) && device_shots(dev) == 0 && _static_single_expval(prog) ? :adjoint :
+                 :parameter_shift
+    end
+    method === :adjoint && return dev isa CatalystDevice ? compiled_gradient(qn, a...) : adjoint_gradient(dev, prog, a)
+    method === :parameter_shift && return parameter_shift_gradient(dev, prog, a)
+    method === :finitediff && return finitediff_gradient(dev, prog, a, Float64(h))
     throw(ArgumentError("unknown gradient method $method (expected :auto, :parameter_shift, :adjoint or :finitediff)"))
 end

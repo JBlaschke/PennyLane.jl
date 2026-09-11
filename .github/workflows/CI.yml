@@ -3,6 +3,8 @@ on:
   push:
     branches: [main]
   pull_request:
+env:
+  JULIA_CONDAPKG_BACKEND: "Null"      # PythonCall must never create a Conda environment
 jobs:
   julia-only:
     # The package and its reference simulator need no Python at all.

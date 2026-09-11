@@ -48,7 +48,7 @@
     end
     @test_throws ArgumentError gradient(varq, 0.2)
     @test gradient(varq, 0.2; method=:finitediff) ≈ 2 * sin(0.2) * cos(0.2) atol = 1e-6
-    @test_throws ArgumentError gradient(bell, 0.3; method=:adjoint)
+    @test gradient(bell, 0.3; method=:adjoint) ≈ -sin(0.3) atol = 1e-12
     @test_throws ArgumentError gradient(bell, 0.3; method=:nonsense)
 
     # the same rules on the H₂ energy

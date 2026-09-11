@@ -28,14 +28,14 @@ for dev in devs
     @printf("  %-20s %8.1f µs / call\n", string(dev), 1e6 * t / n)
 end
 
-println("\nstate-vector throughput (RX,RY per qubit + CNOT ladder, 4 layers)")
-for n in (8, 12, 16, 20)
+println("\nstate-vector throughput (RX,RY per qubit + CNOT ladder, 4 layers); Julia threads: $(Threads.nthreads())")
+for n in (8, 12, 16, 20, 22, 24)
     for dev in devs
         dev isa CatalystDevice && continue
         qn = QNode(θ -> layered(θ, n, 4), dev; name=Symbol(:tp, n))
         θ = rand(8n)
         qn(θ)
-        reps = n <= 12 ? 20 : 3
+        reps = n <= 12 ? 20 : n <= 20 ? 3 : 1
         t = @elapsed for _ in 1:reps; qn(θ); end
         gates = 4 * (2n + n - 1)
         @printf("  n=%2d %-20s %9.2f ms / circuit  (%6.2f µs / gate)\n", n, string(dev), 1e3 * t / reps, 1e6 * t / reps / gates)

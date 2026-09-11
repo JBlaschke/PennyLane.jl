@@ -866,8 +866,11 @@ mutable struct QNode{F,D<:AbstractDevice}
     dev::D
     name::Symbol
     programs::Dict{Any,Program}
+    passes::Vector{Symbol}
 end
-QNode(f, dev::AbstractDevice; name::Symbol=:circuit) = QNode{typeof(f),typeof(dev)}(f, dev, name, Dict{Any,Program}())
+"""`passes`: optimisation passes applied to the traced program, e.g. `[:cancel_inverses, :merge_rotations]` (see `optimize`)."""
+QNode(f, dev::AbstractDevice; name::Symbol=:circuit, passes=Symbol[]) =
+    QNode{typeof(f),typeof(dev)}(f, dev, name, Dict{Any,Program}(), collect(Symbol, passes))
 Base.show(io::IO, qn::QNode) = print(io, "QNode ", qn.name, " on ", qn.dev)
 
 argsig(x::Real) = (:scalar, 0)
@@ -879,7 +882,8 @@ normalize_args(args) = Any[a isa Real ? Float64(a) : Vector{Float64}(a) for a in
 function program(qn::QNode, args...)
     sig = map(argsig, args)
     get!(qn.programs, sig) do
-        trace(qn.f, qn.dev, qn.name, collect(sig))
+        p = trace(qn.f, qn.dev, qn.name, collect(sig))
+        isempty(qn.passes) ? p : optimize(p; passes=qn.passes)
     end
 end
 
@@ -908,4 +912,15 @@ macro qnode(dev, fdef)
         return esc(:($name = $(QNode)($anon, $dev; name=$(QuoteNode(name)))))
     end
     error("usage: @qnode dev function name(args...) ... end")
+end
+"""`@qnode dev passes=[...] function ... end`: as `@qnode`, with optimisation passes."""
+macro qnode(dev, opts, fdef)
+    (opts isa Expr && opts.head === :(=) && opts.args[1] === :passes) || error("usage: @qnode dev passes=[:cancel_inverses, :merge_rotations] function ... end")
+    if fdef isa Expr && (fdef.head === :function || fdef.head === :(=)) && fdef.args[1] isa Expr && fdef.args[1].head === :call
+        sig, body = fdef.args
+        name = sig.args[1]
+        anon = Expr(:function, Expr(:tuple, sig.args[2:end]...), body)
+        return esc(:($name = $(QNode)($anon, $dev; name=$(QuoteNode(name)), passes=$(opts.args[2]))))
+    end
+    error("usage: @qnode dev passes=[...] function name(args...) ... end")
 end
