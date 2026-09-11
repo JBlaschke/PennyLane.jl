@@ -14,3 +14,7 @@ uv sync --project python
 
 creates `python/.venv`. PennyLane.jl finds it automatically; to use another interpreter set
 `PENNYLANE_JL_PYTHON=/path/to/python`.
+
+Order matters when wiring PythonCall into a Julia project: run `PennyLane.setup_python!()` first (it writes
+Preferences for PythonCall and CondaPkg), then add PythonCall. The package's own test environment
+(`test/LocalPreferences.toml`) disables CondaPkg the same way.

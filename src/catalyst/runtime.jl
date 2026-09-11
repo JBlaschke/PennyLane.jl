@@ -88,6 +88,8 @@ for n in 1:MAX_VARARGS
             ccall(rt_sym(:__catalyst__qis__Probs), Cvoid, (Ptr{MemRef1D{Float64}}, Int64, Ptr{Cvoid}...), m, $n, $(qargs...))
         _rt_sample(m::Ref{MemRef2D{Float64}}, q::Vector{Ptr{Cvoid}}, ::Val{$n}) =
             ccall(rt_sym(:__catalyst__qis__Sample), Cvoid, (Ptr{MemRef2D{Float64}}, Int64, Ptr{Cvoid}...), m, $n, $(qargs...))
+        _rt_gradient(r::Vector{<:Ref{MemRef1D{Float64}}}, ::Val{$n}) =
+            ccall(rt_sym(:__catalyst__qis__Gradient), Cvoid, (Int64, Ptr{MemRef1D{Float64}}...), $n, $([:(r[$i]) for i in 1:n]...))
     end
 end
 _checkarity(n) = n <= MAX_VARARGS || throw(ArgumentError("at most $MAX_VARARGS operands are supported here, got $n"))
@@ -120,6 +122,16 @@ function rt_probs(q::Vector{Ptr{Cvoid}})
         _rt_probs(Ref(memref1d(out)), q, Val(length(q)))
     end
     out
+end
+rt_toggle_recorder(on::Bool) = ccall(rt_sym(:__catalyst__rt__toggle_recorder), Cvoid, (Bool,), on)
+"""Adjoint Jacobian of the recorded tape: one vector (∂⟨obs_r⟩/∂p for every recorded gate parameter p) per observable."""
+function rt_gradient(nresults::Int, nparams::Int)
+    _checkarity(nresults)
+    bufs = [zeros(Float64, nparams) for _ in 1:nresults]
+    GC.@preserve bufs begin
+        _rt_gradient([Ref(memref1d(b)) for b in bufs], Val(nresults))
+    end
+    bufs
 end
 function rt_measure(q::Ptr{Cvoid}, postselect::Int)
     r = ccall(rt_sym(:__catalyst__qis__Measure), Ptr{Cvoid}, (Ptr{Cvoid}, Int32), q, postselect)
@@ -210,3 +222,53 @@ function sim_sample(dev::LightningDevice, st::RTState, wires::Vector{Int})
 end
 sim_state(::LightningDevice, st::RTState) = rt_state(st.n)
 sim_measure!(::LightningDevice, st::RTState, wire::Int, postselect::Int) = rt_measure(st.qubits[wire], postselect)
+
+# ---- adjoint differentiation through the runtime's tape recorder ---------------------------------
+function adjoint_gradient(dev::LightningDevice, prog::Program, args::Vector{Any})
+    _check_adjoint_program(prog, "the adjoint gradient")
+    dev.shots == 0 || throw(ArgumentError("the adjoint gradient needs an analytic device (shots = 0)"))
+    rt_toggle_recorder(false)                      # never inherit a recorder left on by a failed run
+    st = sim_allocate(dev, prog.nqubits)
+    gates = GateNode[]
+    jac = Float64[]
+    rt_toggle_recorder(true)
+    try
+        obs = Dict{Int,Any}()
+        coeffs = Float64[]
+        for node in prog.nodes
+            if node isa GateNode
+                params = Float64[ceval(p, args) for p in node.params]
+                sim_apply!(dev, st, node.name, params, node.wires; adjoint=node.adjoint, ctrl_wires=node.ctrl_wires, ctrl_values=node.ctrl_values)
+                push!(gates, node)
+            elseif record_observable!(obs, node)
+            elseif node isa ExpvalNode
+                ts = terms(obs[node.obs])
+                if length(ts) <= MAX_VARARGS
+                    rt_expval(rt_obs_id(st, obs[node.obs]))          # records one observable
+                    push!(coeffs, 1.0)
+                else
+                    length(ts) <= MAX_VARARGS || throw(ArgumentError("adjoint gradients on LightningDevice support observables with at most $MAX_VARARGS terms; use StateVector or :parameter_shift"))
+                end
+            end
+        end
+        nparams = sum(length(g.params) for g in gates; init=0)
+        bufs = rt_gradient(length(coeffs), nparams)
+        jac = sum(c .* b for (c, b) in zip(coeffs, bufs); init=zeros(Float64, nparams))
+    finally
+        rt_toggle_recorder(false)
+        sim_release!(dev, st)
+    end
+    grads = _zero_grads(args)
+    slots = _arg_slots(args)
+    k = 0
+    for g in gates, e in g.params
+        k += 1
+        hasarg(e) || continue
+        for (a, i) in slots
+            d = cdual(e, args, a, i)[2]
+            d == 0 && continue
+            i == 0 ? (grads[a] += jac[k] * d) : (grads[a][i] += jac[k] * d)
+        end
+    end
+    _pack(grads)
+end

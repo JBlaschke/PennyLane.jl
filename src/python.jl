@@ -12,13 +12,15 @@ python_exe() = Sys.iswindows() ? joinpath(default_venv(), "Scripts", "python.exe
     setup_python!(; exe=python_exe())
 
 Configure PythonCall (via Preferences in the active project) to use the uv-managed Python
-environment and disable CondaPkg. Run once per project, then `using PythonCall`.
+environment and disable CondaPkg. Run it once per project **before** adding PythonCall
+(`Pkg.add("PythonCall")` precompiles the bridge, which initialises PythonCall and would otherwise
+let CondaPkg download a Conda Python); then `using PythonCall`.
 """
 function setup_python!(; exe::AbstractString=python_exe())
     isfile(exe) || error("Python not found at $exe. Create the environment first:\n    uv sync --project $(joinpath(pkgdir(@__MODULE__), "python"))")
     Preferences.set_preferences!(PYTHONCALL_UUID, "exe" => String(exe); force=true)
     Preferences.set_preferences!(CONDAPKG_UUID, "backend" => "Null"; force=true)
-    @info "PythonCall will use $exe (CondaPkg disabled). Add PythonCall to your project and run `using PythonCall`."
+    @info "PythonCall will use $exe (CondaPkg disabled). Now add PythonCall to your project and run `using PythonCall`."
     String(exe)
 end
 

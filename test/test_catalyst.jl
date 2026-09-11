@@ -48,6 +48,14 @@ else
         s = smp()
         @test size(s) == (400, 2) && all(x -> x in (0, 1), s) && all(s[:, 1] .== s[:, 2])
 
+        # adjoint differentiation through the runtime's tape recorder
+        @test gradient(allg_l, θa; method=:adjoint) ≈ gradient(allg_s, θa; method=:parameter_shift) atol = 1e-8
+        @test gradient(allg_l, θa) ≈ gradient(allg_s, θa) atol = 1e-8                         # :auto → adjoint
+        @test gradient(e_l, 0.3; method=:adjoint) ≈ gradient(e_l, 0.3; method=:parameter_shift) atol = 1e-10
+        @qnode dev function rnd_grad(θ); random_circuit(θ)[1]; end
+        θg = 2π .* rand(MersenneTwister(7), RANDOM_NPARAMS)
+        @test gradient(rnd_grad, θg; method=:adjoint) ≈ gradient(rnd_grad, θg; method=:parameter_shift) atol = 1e-8
+
         # mid-circuit measurements and control flow through the runtime (T3)
         @qnode dev function tp_l(θ); teleport(θ); end
         for θ in (0.3, 2.1), _ in 1:3

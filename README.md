@@ -49,15 +49,21 @@ Plain Julia `if`/`for` are unrolled at trace time; `@trace` keeps them (see `exa
 
 | Device | What runs | Needs |
 |---|---|---|
-| `StateVector(; shots)` | reference Julia simulator; with `shots` every result is sampled | nothing |
+| `StateVector(; shots, threads)` | Julia simulator: specialised 1-/2-qubit and diagonal kernels, single-pass Pauli expectations, multithreaded from 14 qubits (`julia -t auto`); with `shots` every result is sampled | nothing |
 | `LightningDevice(; shots)` | PennyLane-Lightning via the Catalyst runtime C API | Catalyst binaries |
 | `CatalystDevice(; shots)` | Julia → MLIR → `catalyst` CLI → shared library; compiled adjoint gradients | Catalyst binaries, `clang` |
 | `PyDevice(name; shots, kwargs...)` | any PennyLane device, including hardware plugins, through PythonCall | `using PythonCall` |
+| `YaoDevice(; shots)` | Yao.jl's `ArrayReg`/`instruct!` kernels through the simulator interface | `import Yao` |
 
 Measurements: `expval`, `var`, `probs`, `state`, `sample` (needs shots), `measure` (mid-circuit).
-Gradients: `gradient(qn, args...; method)` with `:parameter_shift` (default, hardware compatible; static
-circuits), `:adjoint` (compiled, `CatalystDevice`; also through `@trace for`/`if`), `:finitediff`.
-`PyDevice` does not take `@trace`/`measure` programs yet.
+Gradients: `gradient(qn, args...; method)` with `:adjoint` (exact, one backward pass; the default on
+analytic `StateVector`/`LightningDevice` for static circuits, and compiled on `CatalystDevice` where it also
+works through `@trace for`/`if`), `:parameter_shift` (hardware compatible; default with shots and on
+`PyDevice`/`YaoDevice`), `:finitediff`. `PyDevice` does not take `@trace`/`measure` programs yet.
+
+Passes: `optimize(prog)` or `@qnode dev passes=[:cancel_inverses, :merge_rotations] function ... end`
+removes gate/inverse pairs and fuses consecutive rotations on the value-semantic IR (the same gate counts
+Catalyst's `cancel-inverses`/`merge-rotations` produce). `gate_count(prog)` counts gates.
 
 ### Catalyst binaries
 
@@ -72,7 +78,8 @@ uv sync --project python
 
 ```julia
 using PennyLane
-PennyLane.setup_python!()               # once per project: points PythonCall at python/.venv, Conda off
+PennyLane.setup_python!()               # once per project, BEFORE adding PythonCall: points it at python/.venv, Conda off
+# ] add PythonCall
 using PythonCall                        # activates PyDevice, molecular_hamiltonian, draw, to_pennylane
 
 dev = PyDevice("default.qubit"; shots=1000)         # or e.g. PyDevice("qiskit.remote"; wires=5, shots=1000, backend=...)
@@ -81,14 +88,18 @@ println(draw(bell, 0.3))
 ```
 
 Other simulators plug in by implementing the `AbstractSimulator` interface
-(`sim_allocate`, `sim_apply!`, `sim_expval`, `sim_state`, optional `sim_var`, `sim_probs`, `sim_sample`, `sim_release!`).
+(`sim_allocate`, `sim_apply!`, `sim_expval`, `sim_state`, optional `sim_var`, `sim_probs`, `sim_sample`,
+`sim_measure!`, `sim_release!`); `ext/PennyLaneYaoExt.jl` is a 60-line example.
 
 ## Tests
 
 ```bash
-julia --project -e 'using Pkg; Pkg.test()'
+JULIA_CONDAPKG_BACKEND=Null julia --project -e 'using Pkg; Pkg.test()'
 ```
 
-Notes: `var` and `sample` are exported (as in PennyLane); qualify them if you also use `Statistics`/`StatsBase`.
+The variable keeps PythonCall (a test dependency) from creating a Conda environment while the test
+project precompiles; the bridge tests use `python/.venv`. Add `-t auto` to exercise the threaded kernels.
+
+Notes: `var` and `sample` are exported (as in PennyLane); qualify them if you also use `Statistics`/`StatsBase`. Load Yao with `import Yao`, since `using Yao` exports clashing names (`X`, `Y`, `Z`, `measure`, ...).
 
 License: Apache-2.0.
