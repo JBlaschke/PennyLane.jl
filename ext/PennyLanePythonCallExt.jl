@@ -4,6 +4,7 @@ module PennyLanePythonCallExt
 using PennyLane
 using PythonCall
 using PennyLane: Program, Node, GateNode, ExpvalNode, VarNode, ProbsNode, StateNode, SampleNode,
+                 MeasureNode, IfNode, ForNode, WhileNode, CExpr, CCall, CValue,
                  PauliString, PauliSum, Observable, ResultSpec, QNode, PyDevice,
                  ceval, terms, program, normalize_args, record_observable!
 
@@ -28,38 +29,133 @@ function pyobs(o::Observable)
     length(ts) == 1 ? pyterm(ts[1]) : q.sum([pyterm(t) for t in ts]...)
 end
 
-"""PennyLane `QuantumScript` for a program with concrete arguments."""
-function to_tape(prog::Program, args::Vector{Any}, shots::Int)
-    (PennyLane.has_control_flow(prog) || PennyLane.has_mcm(prog)) &&
-        throw(ArgumentError("control flow and mid-circuit measurements are not yet supported on PyDevice; unroll loops or use StateVector/LightningDevice/CatalystDevice"))
-    q = qml()
-    ops = Py[]
-    meas = Py[]
-    obs = Dict{Int,Any}()
-    for node in prog.nodes
+# Mid-circuit measurement results become PennyLane `MeasurementValue`s; conditions on them map to
+# `Conditional` operations (PennyLane then applies deferred measurement or dynamic one-shot execution).
+# Purely classical conditions and static loops are evaluated at tape-construction time.
+struct _TapeCtx
+    q::Py
+    ops::Vector{Py}
+    obs::Dict{Int,Any}
+    meas::Dict{Int,Py}           # result id => terminal measurement
+    args::Vector{Any}
+    env::Dict{Int,Any}            # classical values; measurement results hold a Py MeasurementValue
+    depth::Int
+    cond::Union{Nothing,Py}       # enclosing measurement condition (MeasurementValue) for Conditional ops
+end
+_TapeCtx(q, args) = _TapeCtx(q, Py[], Dict{Int,Any}(), Dict{Int,Py}(), args, Dict{Int,Any}(), 0, nothing)
+_with_cond(c::_TapeCtx, cond) = _TapeCtx(c.q, c.ops, c.obs, c.meas, c.args, c.env, c.depth + 1, cond)
+
+_ismv(x) = x isa Py
+_identity() = pybuiltins.eval("lambda v: v", pydict())
+# evaluate a classical expression; measurement values propagate as Py MeasurementValues
+function _pyeval(c::_TapeCtx, e::CExpr)
+    e isa CValue && haskey(c.env, e.id) && _ismv(c.env[e.id]) && return c.env[e.id]
+    if e isa CCall
+        a = [_pyeval(c, x) for x in e.args]
+        if any(_ismv, a)
+            e.op === :not && return ~a[1]
+            e.op === :and && return a[1] & a[2]
+            e.op === :or && return a[1] | a[2]
+            e.op === :eq && return a[1] == a[2]
+            e.op === :ne && return a[1] != a[2]
+            throw(ArgumentError("PyDevice cannot lower classical op $(e.op) on measurement results"))
+        end
+    end
+    ceval(e, c.args, c.env)
+end
+
+function _push_op!(c::_TapeCtx, op::Py)
+    c.cond === nothing || (op = c.q.ops.op_math.Conditional(c.cond, op))
+    push!(c.ops, op)
+end
+
+function emit_nodes!(c::_TapeCtx, nodes::Vector{Node})
+    q = c.q
+    for node in nodes
         if node isa GateNode
-            params = [ceval(p, args) for p in node.params]
+            params = [_pyeval(c, p) for p in node.params]
+            any(_ismv, params) && throw(ArgumentError("PyDevice cannot use measurement results as gate parameters"))
             op = getproperty(q, node.name)(params...; wires=pywires(node.wires))
             node.adjoint && (op = q.adjoint(op))
             isempty(node.in_ctrls) || (op = q.ctrl(op; control=pywires(node.ctrl_wires), control_values=pylist(node.ctrl_values)))
-            push!(ops, op)
-        elseif record_observable!(obs, node)
+            _push_op!(c, op)
+        elseif node isa MeasureNode
+            c.cond === nothing || throw(ArgumentError("PyDevice does not support measurements inside conditional branches"))
+            mp = q.measurements.MidMeasureMP(; wires=q.wires.Wires(pylist([node.wire - 1])),
+                                             postselect=node.postselect >= 0 ? node.postselect : pybuiltins.None,
+                                             meas_uid=string("m", node.result))               # unique ids: deferred measurement keys on them
+            push!(c.ops, mp)
+            c.env[node.result] = q.measurements.MeasurementValue(pylist([mp]), _identity())
+        elseif node isa IfNode
+            cond = _pyeval(c, node.cond)
+            if _ismv(cond)
+                isempty(node.cout) || throw(ArgumentError("PyDevice cannot carry classical values out of a branch on a measurement result"))
+                emit_nodes!(_with_cond(c, c.cond === nothing ? cond : (c.cond & cond)), node.then_body)
+                isempty(node.else_body) || emit_nodes!(_with_cond(c, c.cond === nothing ? ~cond : (c.cond & ~cond)), node.else_body)
+            else
+                taken = cond::Bool
+                emit_nodes!(c, taken ? node.then_body : node.else_body)
+                for (k, id) in enumerate(node.cout)
+                    c.env[id] = ceval(taken ? node.then_cyield[k] : node.else_cyield[k], c.args, c.env)
+                end
+            end
+        elseif node isa ForNode
+            for (k, e) in enumerate(node.cinit)
+                c.env[node.cargs[k]] = ceval(e, c.args, c.env)
+            end
+            for i in node.start:node.step:node.stop
+                c.env[node.index] = i
+                emit_nodes!(c, node.body)
+                vals = [_pyeval(c, e) for e in node.cyield]
+                any(_ismv, vals) && throw(ArgumentError("PyDevice cannot carry measurement results across loop iterations"))
+                for (k, v) in enumerate(vals)
+                    c.env[node.cargs[k]] = v
+                end
+            end
+            for (k, id) in enumerate(node.cout)
+                c.env[id] = c.env[node.cargs[k]]
+            end
+        elseif node isa WhileNode
+            for (k, e) in enumerate(node.cinit)
+                c.env[node.cargs[k]] = ceval(e, c.args, c.env)
+            end
+            iters = 0
+            while true
+                cond = _pyeval(c, node.cond)
+                _ismv(cond) && throw(ArgumentError("PyDevice cannot run a @trace while loop whose condition depends on a measurement result (repeat-until-success needs dynamic control flow)"))
+                cond::Bool || break
+                (iters += 1) > 100_000 && throw(ArgumentError("@trace while loop did not terminate within 100000 iterations"))
+                emit_nodes!(c, node.body)
+                for (k, e) in enumerate(node.cyield)
+                    c.env[node.cargs[k]] = _pyeval(c, e)
+                end
+            end
+            for (k, id) in enumerate(node.cout)
+                c.env[id] = c.env[node.cargs[k]]
+            end
+        elseif record_observable!(c.obs, node)
         elseif node isa ExpvalNode
-            push!(meas, q.expval(pyobs(obs[node.obs])))
+            c.meas[node.result] = q.expval(pyobs(c.obs[node.obs]))
         elseif node isa VarNode
-            push!(meas, q.var(pyobs(obs[node.obs])))
+            c.meas[node.result] = q.var(pyobs(c.obs[node.obs]))
         elseif node isa ProbsNode
-            push!(meas, q.probs(; wires=pywires(obs[node.obs])))
+            c.meas[node.result] = q.probs(; wires=pywires(c.obs[node.obs]))
         elseif node isa SampleNode
-            push!(meas, q.sample(; wires=pywires(obs[node.obs])))
+            c.meas[node.result] = q.sample(; wires=pywires(c.obs[node.obs]))
         elseif node isa StateNode
-            push!(meas, q.state())
+            c.meas[node.result] = q.state()
         end
     end
-    q.tape.QuantumScript(pylist(ops), pylist(meas); shots=shots == 0 ? pybuiltins.None : shots)
 end
 
-# one Python device per wire count (or the fixed `wires` given by the user)
+"""PennyLane `QuantumScript` for a program with concrete arguments."""
+function to_tape(prog::Program, args::Vector{Any}, shots::Int)
+    q = qml()
+    c = _TapeCtx(q, args)
+    emit_nodes!(c, prog.nodes)
+    q.tape.QuantumScript(pylist(c.ops), pylist([c.meas[r] for r in prog.results]); shots=shots == 0 ? pybuiltins.None : shots)
+end
+
 function pydevice(dev::PyDevice, nqubits::Int)
     n = dev.nwires === nothing ? nqubits : dev.nwires
     n >= nqubits || throw(ArgumentError("PyDevice has $(dev.nwires) wires but the program uses $nqubits qubits"))

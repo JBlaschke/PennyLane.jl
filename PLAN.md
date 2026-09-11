@@ -1,6 +1,6 @@
 # PennyLane.jl — research plan
 
-*Status: plan v1.5, 2026-09-12 (decisions in §9 resolved; M0–M3 implemented, see §7). Reference machine: Apple M4 Max (macOS, arm64), Julia 1.12.7, Python 3.14.7 + uv.*
+*Status: plan v1.6, 2026-09-12 (decisions in §9 resolved; M0–M3 implemented, M4 in progress, see §7). Reference machine: Apple M4 Max (macOS, arm64), Julia 1.12.7, Python 3.14.7 + uv.*
 
 ## 0. Summary
 
@@ -330,30 +330,45 @@ init/release inside the qnode; Python's ctypes path adds tens of µs on top. Hoi
 
 ## 7. Roadmap
 
-**Status 2026-09-12: M0–M3 done.** The package loads with no Python; the full suite (simulators, Lightning
-FFI, compiled Catalyst, PennyLane bridge, Yao backend) passes on the reference machine, single- and
-multithreaded.
+**Status 2026-09-12 (evening): M0–M3 done, M4 started.** The package loads with no Python; the full suite
+(simulators, Lightning FFI, compiled Catalyst, PennyLane bridge, Yao backend, native compilation, Reactant pass)
+passes on the reference machine.
 
-Implemented through M2: Pauli operator algebra and `evolve`, the PennyLane gate set, the value-semantic
+Implemented through M3: Pauli operator algebra and `evolve`, the PennyLane gate set, the value-semantic
 tracer with `@qnode`, integer-wire sugar, traced arithmetic/comparisons, all terminal measurements,
 mid-circuit `measure`, `@trace if/for/while`, the region IR and its Catalyst MLIR printer, the
-`AbstractSimulator` interface, `StateVector`, `LightningDevice`, `CatalystDevice`, `PyDevice`,
-parameter-shift/finite-difference gradients, the H₂ dataset, and test problems T1–T3.
+`AbstractSimulator` interface, `StateVector` (specialised/threaded kernels), `LightningDevice`,
+`CatalystDevice`, `PyDevice`, `YaoDevice`, adjoint/parameter-shift/finite-difference gradients, IR passes
+(`cancel_inverses`, `merge_rotations`, cross-checked with Catalyst), the H₂ dataset, test problems T1–T5.
 
-M3 added: specialised state-vector kernels (1-/2-qubit dense, diagonal, general controlled), single-pass
-Pauli expectations, multithreading from 14 qubits; the analytic **adjoint method** on `StateVector` (one
-backward pass with gate generators) and adjoint gradients on `LightningDevice` through the runtime's tape
-recorder (`toggle_recorder`/`Gradient`), now the default gradient on analytic simulators; IR **passes**
-`cancel_inverses`/`merge_rotations` (`optimize`, `@qnode dev passes=[...]`), cross-checked against
-Catalyst's `cancel-inverses`/`merge-rotations` on the same program (identical gate counts, T5); the
-**Yao extension** (`YaoDevice`, 60 lines against the simulator interface, element-wise equal to
-`StateVector`); the T4 benchmark (`bench/latency.jl`, numbers below).
+M4 so far (research track of §3.5 plus the deferred items that matter for hardware):
 
-Decisions made in M3: the analytic adjoint method replaces the planned Enzyme backprop (exact, O(1)
-passes, no compile-time cost; Enzyme stays a research item), and the passes live on our own IR rather than
-on a Reactant round trip (same optimisations for every backend; the Reactant route stays open for T5-style
-research on Catalyst's own IR). Deferred to M4: Metal/GPU kernels, register threading in regions (needed
-for compiled gradients through `scf.while`), dynamic wire indices, control flow on `PyDevice`.
+- **Control flow on `PyDevice`**: mid-circuit measurements become PennyLane `MeasurementValue`s, branches on
+  them become `Conditional` operations (deferred measurement or dynamic one-shot on the device, so hardware
+  plugins get them too), `@trace for` and classical `while` loops are unrolled at tape construction;
+  repeat-until-success loops are rejected with a clear message. Teleportation and looped QAOA run on
+  `default.qubit` through the bridge and match `StateVector`.
+- **Julia → native, no MLIR (T6)**: `native_expr(prog)` generates straight-line Julia that calls the Catalyst
+  runtime C API for a static program; `JITDevice` executes programs that way through Julia's JIT (all gate
+  families, adjoint/controlled included, values equal to `StateVector`). With `GPUCompiler` (extension),
+  `compile_native(qn, args...)` compiles the same function with plain LLVM externs into a shared library whose
+  only undefined symbols are the runtime's `__catalyst__*` functions and libm — a QIR-style program produced by
+  Julia's own compiler; `native_llvm_ir` shows the IR. Gate modifiers are excluded from the static path for now
+  (they need a heap-allocated `Modifiers` struct).
+- **Julia passes on Catalyst's IR via Reactant (T5, research variant)**: `mlir_pass(text, :cancel_inverses)` asks
+  the Catalyst CLI for the generic op form, parses it with Reactant's MLIR (Catalyst ops unregistered), rewrites
+  through the MLIR C API (`mlirValueReplaceAllUsesOfWith`, erase), prints, and `CatalystDevice(mlir_transform=…)`
+  compiles the result: 9 gates → 1 on the test circuit, values and gradients unchanged. Reactant bundles LLVM 24
+  against Catalyst's LLVM 22, so text is the only viable exchange; that works.
+- **Kernels**: a contiguous hi/lo-loop variant of the single-qubit kernel and a thread threshold of 18
+  qubits were measured against the M3 kernel and came out slower (85 vs 75 µs/gate at 16 qubits, 643 vs 572
+  at 20), so the flat index mapping stays. The 12–16 qubit gap to Lightning is vectorisation (LLVM does not
+  vectorise the interleaved complex loop); the candidates are SIMD.jl vectors or a split re/im layout.
+
+Still open in M4: Metal/GPU kernels, register threading in regions (compiled gradients through `scf.while`),
+dynamic wire indices (`q[i]` with a traced index), gate modifiers in static native code, vectorised kernels
+at 12–16 qubits (the remaining 2.5× gap to Lightning), Enzyme experiment, Reactant/StableHLO bridge for
+classical code, Sturm-style oracles, QuantumClifford/ITensor backends, hardware via Catalyst devices.
 
 Measured on the reference machine (`bench/latency.jl`, `julia -t auto`, 10 threads): per-call latency
 of a 2-qubit circuit including device init/release is 2.6 µs on StateVector, 15 µs on Lightning through
@@ -379,7 +394,7 @@ allocations, thread from 12 qubits).
 | M1 Core — **done** | gate and observable types, `PauliSum` algebra, IR + verifier, tracer with both API styles, `StateVector` (B1), measurements, parameter-shift and finite-diff, PythonCall extension as oracle (and hardware bridge), shots/sampling, T1 on B1–B4 | 2–3 weeks |
 | M2 Catalyst — **done** | `to_mlir`, CLI driver and linker, generalized memref FFI (rank-n, multiple results), `gradient.grad`, `@trace if/for/while` + `measure`, `evolve`, T1/T2/T3 on B3, benchmark harness (`bench/latency.jl`) | 2 weeks |
 | M3 Performance and passes — **done** (Metal, register threading, dynamic wires moved to M4) | specialised/threaded kernels, adjoint method on B1, Lightning adjoint through B2, IR passes cross-checked with Catalyst (T5), Yao extension, T4 benchmark | 3 weeks |
-| M4 Research and remaining performance | Metal/GPU kernels via KernelAbstractions, register threading in regions, dynamic wire indices, control flow on PyDevice, Enzyme experiment, Julia→QIR (T6), Reactant/StableHLO bridge, Julia passes on Catalyst IR via Reactant, Sturm-style oracles, QuantumClifford/ITensor backends, hardware via Catalyst devices | open-ended |
+| M4 Research and remaining performance — **in progress** | done: control flow on PyDevice, Julia→native (T6, JITDevice + GPUCompiler), Julia passes on Catalyst IR via Reactant; open: Metal/GPU kernels, register threading in regions, dynamic wire indices, Enzyme experiment, Reactant/StableHLO bridge, Sturm-style oracles, QuantumClifford/ITensor backends, hardware via Catalyst devices | open-ended |
 
 ## 8. Risks and mitigations
 

@@ -35,6 +35,8 @@ include("ir/passes.jl")
 include("catalyst/env.jl")
 include("catalyst/runtime.jl")
 include("catalyst/compiled.jl")
+include("catalyst/native.jl")
+include("catalyst/research.jl")
 include("gradients.jl")
 include("datasets.jl")
 include("python.jl")
@@ -51,7 +53,8 @@ export measure, @trace, @qif, @qfor, @qwhile, evolve, ApproxTimeEvolution, Trace
 export optimize, gate_count
 export QubitConsumedError, TraceError
 # devices
-export AbstractDevice, AbstractSimulator, StateVector, LightningDevice, CatalystDevice, PyDevice, YaoDevice, execute
+export AbstractDevice, AbstractSimulator, StateVector, LightningDevice, CatalystDevice, PyDevice, YaoDevice, JITDevice, execute
+export native_expr, native_function, compile_native, native_llvm_ir, mlir_pass
 export catalyst_env, has_catalyst, setup_python!, python_exe
 # datasets and Python bridge
 export h2_hamiltonian, H2_GROUND_ENERGY, molecular_hamiltonian, from_pennylane, to_pennylane, draw

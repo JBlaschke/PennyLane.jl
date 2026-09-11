@@ -11,10 +11,12 @@ struct CatalystDevice <: AbstractDevice
     shots::Int
     kwargs::String
     keep_intermediate::Bool
+    mlir_transform::Union{Nothing,Function}      # String -> String, applied to the MLIR before compilation
     cache::IdDict{Program,Any}
 end
-CatalystDevice(n::Union{Nothing,Integer}=nothing; shots::Integer=0, kwargs::AbstractString=LIGHTNING_KWARGS, keep_intermediate::Bool=false) =
-    CatalystDevice(n === nothing ? nothing : Int(n), Int(shots), String(kwargs), keep_intermediate, IdDict{Program,Any}())
+CatalystDevice(n::Union{Nothing,Integer}=nothing; shots::Integer=0, kwargs::AbstractString=LIGHTNING_KWARGS,
+               keep_intermediate::Bool=false, mlir_transform::Union{Nothing,Function}=nothing) =
+    CatalystDevice(n === nothing ? nothing : Int(n), Int(shots), String(kwargs), keep_intermediate, mlir_transform, IdDict{Program,Any}())
 Base.show(io::IO, d::CatalystDevice) = print(io, "CatalystDevice(", d.nwires === nothing ? "" : d.nwires, ")")
 
 mutable struct CompiledModule
@@ -70,6 +72,7 @@ function compile(dev::CatalystDevice, prog::Program)
     grad = prog.scalar_return && prog.result_specs[1].kind === :expval && !isempty(prog.args) && !has_mcm(prog) &&
            !any(n -> n isa WhileNode, all_nodes(prog))
     src = to_mlir(prog; device_lib=env.lightning_plugin, device_kwargs=dev.kwargs, shots=dev.shots, grad=grad)
+    dev.mlir_transform === nothing || (src = String(dev.mlir_transform(src)))
     dir = mktempdir(; cleanup=!dev.keep_intermediate)
     name = string(prog.name)
     mlirfile = joinpath(dir, "$name.mlir")
