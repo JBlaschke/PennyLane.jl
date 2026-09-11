@@ -84,3 +84,60 @@ function h2_hea(θ)
     end
     return expval(H2)
 end
+
+# T3: teleportation of RX(θ)|0⟩ from wire 1 to wire 3 with mid-circuit measurements
+function teleport(θ)
+    a, b, c = qubits(3)
+    a = RX(θ, a)                        # state to teleport
+    b = Hadamard(b)                     # Bell pair on (b, c)
+    b, c = CNOT(b, c)
+    a, b = CNOT(a, b)
+    a = Hadamard(a)
+    m1, a = measure(a)
+    m2, b = measure(b)
+    @trace if m2
+        c = PauliX(c)
+    end
+    @trace if m1
+        c = PauliZ(c)
+    end
+    return expval(Z(c)), expval(Y(c))
+end
+
+# T3: repeat until success — keep measuring |+⟩ until the outcome is 1 (final state |1⟩)
+function rus()
+    q = qubits(1)[1]
+    done = false
+    @trace while !done
+        q = Hadamard(q)
+        done, q = measure(q)
+    end
+    return expval(Z(q))
+end
+
+# T2: QAOA MaxCut on the 4-cycle
+const RING = [(1, 2), (2, 3), (3, 4), (4, 1)]
+maxcut_cost(edges) = sum(0.5 * (1 - Z(i) * Z(j)) for (i, j) in edges)
+mixer(n) = sum(X(i) for i in 1:n)
+function qaoa_unrolled(γ, β)
+    q = qubits(4)
+    for i in 1:4
+        q[i] = Hadamard(q[i])
+    end
+    for l in eachindex(γ)
+        q = collect(evolve(maxcut_cost(RING), γ[l], q...))
+        q = collect(evolve(mixer(4), β[l], q...))
+    end
+    return expval(maxcut_cost(RING))
+end
+function qaoa_looped(γ, β)
+    q = qubits(4)
+    for i in 1:4
+        q[i] = Hadamard(q[i])
+    end
+    @trace for l in 1:length(γ)
+        q = collect(evolve(maxcut_cost(RING), γ[l], q...))
+        q = collect(evolve(mixer(4), β[l], q...))
+    end
+    return expval(maxcut_cost(RING))
+end

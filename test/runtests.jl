@@ -14,6 +14,8 @@ include("circuits.jl")
     include("test_gradients.jl")
     include("test_shots.jl")
     include("test_vqe.jl")
+    include("test_controlflow.jl")
+    include("test_qaoa.jl")
     include("test_catalyst.jl")
     include("test_pythoncall.jl")
 end

@@ -33,6 +33,10 @@ function sim_expval end
 """`sim_state(sim, state) -> Vector{Complex}`: full state vector (required for default probs/state)."""
 function sim_state end
 
+"""`sim_measure!(sim, state, wire, postselect) -> Bool`: mid-circuit measurement collapsing the state; `postselect` is -1, 0 or 1 (required for `measure`)."""
+sim_measure!(sim::AbstractSimulator, state, wire::Int, postselect::Int) =
+    throw(ArgumentError("$(typeof(sim)) does not support mid-circuit measurements"))
+
 """`sim_sample(sim, state, wires::Vector{Int}) -> Matrix{Int}` (shots × wires): computational-basis samples (needed for `sample`)."""
 sim_sample(sim::AbstractSimulator, state, wires::Vector{Int}) =
     throw(ArgumentError("$(typeof(sim)) cannot sample(); use a device constructed with shots > 0"))
@@ -85,6 +89,66 @@ function record_observable!(obs::Dict{Int,Any}, node::Node)
 end
 
 # ---- generic interpreter --------------------------------------------------------------------
+function run_nodes!(dev::AbstractSimulator, st, nodes::Vector{Node}, args, env::Dict{Int,Any}, obs::Dict{Int,Any}, res::Dict{Int,Any})
+    for node in nodes
+        if node isa GateNode
+            params = Float64[ceval(p, args, env) for p in node.params]
+            sim_apply!(dev, st, node.name, params, node.wires;
+                       adjoint=node.adjoint, ctrl_wires=node.ctrl_wires, ctrl_values=node.ctrl_values)
+        elseif record_observable!(obs, node)
+        elseif node isa MeasureNode
+            env[node.result] = sim_measure!(dev, st, node.wire, node.postselect)
+        elseif node isa IfNode
+            c = ceval(node.cond, args, env)::Bool
+            run_nodes!(dev, st, c ? node.then_body : node.else_body, args, env, obs, res)
+            ys = c ? node.then_cyield : node.else_cyield
+            vals = [ceval(e, args, env) for e in ys]
+            for (id, v) in zip(node.cout, vals)
+                env[id] = v
+            end
+        elseif node isa ForNode
+            for (id, e) in zip(node.cargs, node.cinit)
+                env[id] = ceval(e, args, env)
+            end
+            for i in node.start:node.step:node.stop
+                env[node.index] = i
+                run_nodes!(dev, st, node.body, args, env, obs, res)
+                vals = [ceval(e, args, env) for e in node.cyield]
+                for (id, v) in zip(node.cargs, vals)
+                    env[id] = v
+                end
+            end
+            for (o, a) in zip(node.cout, node.cargs)
+                env[o] = env[a]
+            end
+        elseif node isa WhileNode
+            for (id, e) in zip(node.cargs, node.cinit)
+                env[id] = ceval(e, args, env)
+            end
+            while ceval(node.cond, args, env)::Bool
+                run_nodes!(dev, st, node.body, args, env, obs, res)
+                vals = [ceval(e, args, env) for e in node.cyield]
+                for (id, v) in zip(node.cargs, vals)
+                    env[id] = v
+                end
+            end
+            for (o, a) in zip(node.cout, node.cargs)
+                env[o] = env[a]
+            end
+        elseif node isa ExpvalNode
+            res[node.result] = sim_expval(dev, st, obs[node.obs])
+        elseif node isa VarNode
+            res[node.result] = sim_var(dev, st, obs[node.obs])
+        elseif node isa ProbsNode
+            res[node.result] = sim_probs(dev, st, obs[node.obs])
+        elseif node isa StateNode
+            res[node.result] = sim_state(dev, st)
+        elseif node isa SampleNode
+            res[node.result] = sim_sample(dev, st, obs[node.obs])
+        end
+    end
+end
+
 """
     execute(dev, prog::Program, args::Vector{Any})
 
@@ -92,27 +156,9 @@ Run a traced program on a device with concrete arguments (`Float64` / `Vector{Fl
 """
 function execute(dev::AbstractSimulator, prog::Program, args::Vector{Any})
     st = sim_allocate(dev, prog.nqubits)
-    obs = Dict{Int,Any}()
     res = Dict{Int,Any}()
     try
-        for node in prog.nodes
-            if node isa GateNode
-                params = Float64[ceval(p, args) for p in node.params]
-                sim_apply!(dev, st, node.name, params, node.wires;
-                           adjoint=node.adjoint, ctrl_wires=node.ctrl_wires, ctrl_values=node.ctrl_values)
-            elseif record_observable!(obs, node)
-            elseif node isa ExpvalNode
-                res[node.result] = sim_expval(dev, st, obs[node.obs])
-            elseif node isa VarNode
-                res[node.result] = sim_var(dev, st, obs[node.obs])
-            elseif node isa ProbsNode
-                res[node.result] = sim_probs(dev, st, obs[node.obs])
-            elseif node isa StateNode
-                res[node.result] = sim_state(dev, st)
-            elseif node isa SampleNode
-                res[node.result] = sim_sample(dev, st, obs[node.obs])
-            end
-        end
+        run_nodes!(dev, st, prog.nodes, args, Dict{Int,Any}(), Dict{Int,Any}(), res)
     finally
         sim_release!(dev, st)
     end

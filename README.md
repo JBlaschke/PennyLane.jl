@@ -24,8 +24,26 @@ Integer wires work wherever a qubit does (`RX(θ, 1); CNOT(1, 2); expval(Z(2))`)
 circuits transliterate line by line. Using a qubit value twice is a `QubitConsumedError`.
 
 Operators are Julia values: `H = 0.5*Z(1)*Z(2) + 0.3*X(1)`, `commutator(H, X(1))`, `matrix(H)`,
-`exp(-im*t*Z(1)*Z(2))` (a gate). `h2_hamiltonian()` ships the H₂ Hamiltonian; `examples/vqe_h2.jl`
-runs the VQE on every backend.
+`exp(-im*t*H)` (a gate), `evolve(H, t, q...; steps)` (Trotterised time evolution, `t` may be a
+parameter). `h2_hamiltonian()` ships the H₂ Hamiltonian; `examples/vqe_h2.jl` runs the VQE on
+every backend.
+
+Mid-circuit measurements and control flow that must survive into the program:
+
+```julia
+m, q = measure(q)                       # m is a traced Bool; measure(q; postselect=1), measure(q; reset=true)
+@trace if m                             # branch on it (scf.if); variables assigned inside are threaded through
+    c = PauliX(c)
+end
+@trace while !done                      # repeat until success (scf.while)
+    q = Hadamard(q); done, q = measure(q)
+end
+@trace for l in 1:p                     # traced loop (scf.for); θ[l] becomes a dynamic index
+    q = collect(evolve(C, γ[l], q...))
+end
+```
+
+Plain Julia `if`/`for` are unrolled at trace time; `@trace` keeps them (see `examples/control_flow.jl`).
 
 ## Backends
 
@@ -36,9 +54,10 @@ runs the VQE on every backend.
 | `CatalystDevice(; shots)` | Julia → MLIR → `catalyst` CLI → shared library; compiled adjoint gradients | Catalyst binaries, `clang` |
 | `PyDevice(name; shots, kwargs...)` | any PennyLane device, including hardware plugins, through PythonCall | `using PythonCall` |
 
-Measurements: `expval`, `var`, `probs`, `state`, `sample` (needs shots). Gradients:
-`gradient(qn, args...; method)` with `:parameter_shift` (default, hardware compatible),
-`:adjoint` (compiled, `CatalystDevice`), `:finitediff`.
+Measurements: `expval`, `var`, `probs`, `state`, `sample` (needs shots), `measure` (mid-circuit).
+Gradients: `gradient(qn, args...; method)` with `:parameter_shift` (default, hardware compatible; static
+circuits), `:adjoint` (compiled, `CatalystDevice`; also through `@trace for`/`if`), `:finitediff`.
+`PyDevice` does not take `@trace`/`measure` programs yet.
 
 ### Catalyst binaries
 

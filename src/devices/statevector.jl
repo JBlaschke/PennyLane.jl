@@ -104,6 +104,24 @@ function _exact_expval(st::SVState, p::PauliString)
     real(p.coeff * dot(st.ψ, ϕ))
 end
 
+# ---- mid-circuit measurement ---------------------------------------------------------------------
+function sim_measure!(sim::StateVector, st::SVState, wire::Int, postselect::Int)
+    n = st.n
+    mask = 1 << (n - wire)
+    p1 = 0.0
+    @inbounds for i in 0:(1<<n)-1
+        (i & mask) != 0 && (p1 += abs2(st.ψ[i+1]))
+    end
+    outcome = postselect >= 0 ? postselect == 1 : rand(sim.rng) < p1
+    pkeep = outcome ? p1 : 1 - p1
+    pkeep > 1e-14 || throw(ArgumentError("postselecting outcome $(Int(outcome)) on wire $wire has zero probability"))
+    scale = 1 / sqrt(pkeep)
+    @inbounds for i in 0:(1<<n)-1
+        st.ψ[i+1] = ((i & mask) != 0) == outcome ? st.ψ[i+1] * scale : zero(eltype(st.ψ))
+    end
+    outcome
+end
+
 # ---- sampling ----------------------------------------------------------------------------------
 """Draw `shots` indices (0-based) from the probability vector `p`."""
 function sample_indices(rng::Random.AbstractRNG, p::AbstractVector{<:Real}, shots::Int)

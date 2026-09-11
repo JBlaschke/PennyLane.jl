@@ -121,6 +121,11 @@ function rt_probs(q::Vector{Ptr{Cvoid}})
     end
     out
 end
+function rt_measure(q::Ptr{Cvoid}, postselect::Int)
+    r = ccall(rt_sym(:__catalyst__qis__Measure), Ptr{Cvoid}, (Ptr{Cvoid}, Int32), q, postselect)
+    one = ccall(rt_sym(:__catalyst__rt__result_get_one), Ptr{Cvoid}, ())
+    ccall(rt_sym(:__catalyst__rt__result_equal), Bool, (Ptr{Cvoid}, Ptr{Cvoid}), r, one)
+end
 function rt_sample(shots::Int, q::Vector{Ptr{Cvoid}})
     _checkarity(length(q))
     n = length(q)
@@ -204,3 +209,4 @@ function sim_sample(dev::LightningDevice, st::RTState, wires::Vector{Int})
     rt_sample(dev.shots, Ptr{Cvoid}[st.qubits[w] for w in wires])
 end
 sim_state(::LightningDevice, st::RTState) = rt_state(st.n)
+sim_measure!(::LightningDevice, st::RTState, wire::Int, postselect::Int) = rt_measure(st.qubits[wire], postselect)

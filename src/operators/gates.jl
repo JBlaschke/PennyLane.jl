@@ -170,6 +170,24 @@ end
 matrix(u::BoundPauliRot) = matrix(PauliRotGate(u.theta, u.word))
 wires(u::BoundPauliRot) = u.wires
 
+"""exp(-i t H) for a real Hamiltonian, applied by Trotterisation (see `evolve`)."""
+struct BoundEvolution <: Operator
+    H::Observable
+    t::Float64
+    steps::Int
+end
+function Base.exp(s::PauliSum)
+    ts = terms(s)
+    isempty(ts) && throw(ArgumentError("exp of the zero operator is the identity"))
+    for t in ts
+        abs(real(t.coeff)) <= 1e-14 * max(1.0, abs(t.coeff)) ||
+            throw(ArgumentError("exp of a Pauli sum needs purely imaginary coefficients, e.g. exp(-im * t * H)"))
+    end
+    BoundEvolution(PauliSum([PauliString(-imag(t.coeff), t.word) for t in ts if !isempty(t.word)]), 1.0, 1)
+end
+matrix(u::BoundEvolution, n::Integer=nwires(u.H)) = exp(-im * u.t * Matrix(matrix(u.H, n)))
+wires(u::BoundEvolution) = wires(u.H)
+
 # Application is defined by the tracer (ir/tracer.jl).
 function apply end
 
